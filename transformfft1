@@ -1,0 +1,641 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from torch.utils.data import Dataset, DataLoader
+from scipy.fft import fft, ifft
+from typing import Tuple, Optional
+import math
+
+class TimeSeriesDataset(Dataset):
+    def __init__(self, input_data: np.ndarray, parameters: np.ndarray, target_data: np.ndarray, device='cpu'):
+        """
+        Initialize a dataset that first samples points from the time domain, then performs FFT.
+        
+        Args:
+            input_data: Time series input data with shape [n_samples, time_length]
+            parameters: Parameters for each sample with shape [n_samples, n_params]
+            target_data: Target time series data with shape [n_samples, time_length]
+            device: The device to store tensors on
+        """
+        # Convert input data to float
+        input_data = input_data.astype(np.float32)
+        parameters = parameters.astype(np.float32)
+        target_data = target_data.astype(np.float32)
+        self.device = device
+
+        # Store original dimensions
+        self.original_time_length = input_data.shape[1]
+        
+        # Sample 400 equidistant points from the time domain first
+        n_time_points = input_data.shape[1]
+        self.sample_indices_time = np.linspace(0, n_time_points-1, 400, dtype=int)
+        
+        # Extract the sampled points from time domain
+        input_sampled = input_data[:, self.sample_indices_time]
+        target_sampled = target_data[:, self.sample_indices_time]
+        
+        # Store the sampled time signals
+        self.input_time_sampled = input_sampled
+        self.target_time_sampled = target_sampled
+        
+        # Now compute FFT of sampled time data (not the full time series)
+        input_fft = fft(input_sampled, axis=1)
+        target_fft = fft(target_sampled, axis=1)
+        
+        # Take absolute value for magnitude spectrum
+        input_magnitude = np.abs(input_fft)
+        input_phase = np.angle(input_fft)
+        
+        target_magnitude = np.abs(target_fft)
+        target_phase = np.angle(target_fft)
+        
+        # Keep only first half of FFT (due to symmetry for real signals)
+        n = input_magnitude.shape[1]  # This will be 400 from our sampling
+        self.n_time_points = n  # Store for reconstruction
+        
+        half_n = n//2
+        input_magnitude = input_magnitude[:, :half_n]
+        input_phase = input_phase[:, :half_n]
+        target_magnitude = target_magnitude[:, :half_n]
+        target_phase = target_phase[:, :half_n]
+        self.fft_length = half_n  # Store number of frequency bins
+        
+        # Normalize FFT magnitude for input
+        input_mag_mean = np.mean(input_magnitude, axis=1, keepdims=True)
+        input_mag_std = np.std(input_magnitude, axis=1, keepdims=True)
+        input_mag_std[input_mag_std == 0] = 1  # Prevent division by zero
+        input_magnitude_normalized = (input_magnitude - input_mag_mean) / input_mag_std
+
+        # For phase, use sin and cos representation to handle circular nature
+        input_phase_sin = np.sin(input_phase)
+        input_phase_cos = np.cos(input_phase)
+
+        # Normalize parameters
+        param_mean = np.mean(parameters, axis=0, keepdims=True)
+        param_std = np.std(parameters, axis=0, keepdims=True)
+        param_std[param_std == 0] = 1  # Prevent division by zero
+        parameters_normalized = (parameters - param_mean) / param_std
+        
+        # Normalize target magnitude
+        target_mag_mean = np.mean(target_magnitude, axis=1, keepdims=True)
+        target_mag_std = np.std(target_magnitude, axis=1, keepdims=True)
+        target_mag_std[target_mag_std == 0] = 1  # Prevent division by zero
+        target_magnitude_normalized = (target_magnitude - target_mag_mean) / target_mag_std
+        
+        # Convert target phase to sin and cos
+        target_phase_sin = np.sin(target_phase)
+        target_phase_cos = np.cos(target_phase)
+        
+        # Store data as tensors directly (no further sampling needed)
+        self.input_magnitude = torch.FloatTensor(input_magnitude_normalized)
+        self.input_phase_sin = torch.FloatTensor(input_phase_sin)
+        self.input_phase_cos = torch.FloatTensor(input_phase_cos)
+        self.parameters = torch.FloatTensor(parameters_normalized)
+        self.target_magnitude = torch.FloatTensor(target_magnitude_normalized)
+        self.target_phase_sin = torch.FloatTensor(target_phase_sin)
+        self.target_phase_cos = torch.FloatTensor(target_phase_cos)
+
+        # Store normalization parameters for possible future use
+        self.input_mag_mean = input_mag_mean
+        self.input_mag_std = input_mag_std
+        self.param_mean = param_mean
+        self.param_std = param_std
+        self.target_mag_mean = target_mag_mean
+        self.target_mag_std = target_mag_std
+        
+        # Store FFT information
+        self.input_fft = input_fft
+        self.target_fft = target_fft
+
+    def __len__(self) -> int:
+        """Return the number of samples in the dataset."""
+        return len(self.input_magnitude)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Get a single sample from the dataset."""
+        return (
+            self.input_magnitude[idx], 
+            self.input_phase_sin[idx], 
+            self.input_phase_cos[idx], 
+            self.parameters[idx], 
+            self.target_magnitude[idx], 
+            self.target_phase_sin[idx], 
+            self.target_phase_cos[idx]
+        )
+    
+    def reconstruct_time_series(self, magnitude, phase_sin, phase_cos, idx: int) -> np.ndarray:
+        """
+        Reconstruct time-domain signal from normalized magnitude and phase predictions.
+        The reconstructed signal will remain normalized.
+        
+        Args:
+            magnitude: Predicted magnitude spectrum (normalized)
+            phase_sin: Predicted sine of phase
+            phase_cos: Predicted cosine of phase
+            idx: Index of the sample (for reference)
+            
+        Returns:
+            Reconstructed time domain signal (normalized)
+        """
+        # Convert to numpy if tensors
+        if isinstance(magnitude, torch.Tensor):
+            magnitude = magnitude.cpu().numpy()
+        if isinstance(phase_sin, torch.Tensor):
+            phase_sin = phase_sin.cpu().numpy()
+        if isinstance(phase_cos, torch.Tensor):
+            phase_cos = phase_cos.cpu().numpy()
+        
+        # Convert sin/cos representation back to phase angles
+        phase = np.arctan2(phase_sin, phase_cos)
+        
+        # We're working with 400 sampled time points, so FFT gives 400 frequency points
+        # Due to symmetry, we used the first 200 frequency points
+        n = self.n_time_points  # 400 time points
+        half_n = n // 2         # 200 frequency points
+        
+        # Create the full complex spectrum for IFFT
+        # First, create an array of zeros with the right size
+        complex_spectrum = np.zeros(n, dtype=complex)
+        
+        # Fill in the first half with our magnitude and phase information
+        complex_spectrum[:half_n] = magnitude * np.exp(1j * phase)
+        
+        # Fill in the second half with complex conjugates (for a real signal)
+        # Skip DC (0) and Nyquist (half_n) frequency
+        complex_spectrum[-(half_n-1):] = np.flip(np.conj(complex_spectrum[1:half_n]))
+        
+        # Perform inverse FFT to get back to time domain
+        time_series = np.real(ifft(complex_spectrum))
+        
+        return time_series
+    
+    def denormalize_magnitude(self, magnitude, idx: int) -> np.ndarray:
+        """
+        Optional method to denormalize magnitude values if original scale is needed.
+        
+        Args:
+            magnitude: Normalized magnitude spectrum
+            idx: Index of the sample
+            
+        Returns:
+            Denormalized magnitude spectrum
+        """
+        if isinstance(magnitude, torch.Tensor):
+            magnitude = magnitude.cpu().numpy()
+        
+        # Convert magnitude back to original scale
+        denormalized = magnitude * self.target_mag_std[idx] + self.target_mag_mean[idx]
+        
+        return denormalized
+
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model: int, max_len: int = 400):
+        """
+        Initialize positional encoding for transformer.
+        
+        Args:
+            d_model: Dimensionality of the model
+            max_len: Maximum sequence length
+        """
+        super().__init__()
+        
+        # Create a tensor of shape (1, max_len, d_model)
+        pe = torch.zeros(1, max_len, d_model)
+        
+        # Create a tensor of shape (max_len, 1)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        
+        # Create the division term for the positional encoding formula
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        
+        # Apply sine to even indices and cosine to odd indices
+        pe[0, :, 0::2] = torch.sin(position * div_term)
+        pe[0, :, 1::2] = torch.cos(position * div_term)
+        
+        # Register the positional encoding as a buffer (not a parameter)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Add positional encoding to the input.
+        
+        Args:
+            x: Input tensor of shape (batch_size, seq_len, d_model)
+            
+        Returns:
+            Tensor with positional encoding added
+        """
+        # Add the positional encoding to the input
+        # The [:, :x.size(1)] slices the positional encoding to match the input sequence length
+        return x + self.pe[:, :x.size(1)]
+
+
+class TransformerModel(nn.Module):
+    def __init__(
+        self,
+        d_model: int = 128,
+        nhead: int = 8,
+        num_layers: int = 6,
+        dim_feedforward: int = 512,
+        dropout: float = 0.2,
+        num_parameters: int = 3
+    ):
+        """
+        Initialize transformer model for frequency domain translation.
+        
+        Args:
+            d_model: Hidden dimension of the model
+            nhead: Number of attention heads
+            num_layers: Number of transformer layers
+            dim_feedforward: Dimension of feedforward network
+            dropout: Dropout probability
+            num_parameters: Number of input parameters (e.g. crack properties)
+        """
+        super().__init__()
+
+        # Initialize weights using Xavier uniform initialization
+        def _xavier_init(module):
+            if isinstance(module, (nn.Linear, nn.Conv1d)):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+
+        # Parameter embedding to embed crack parameters into model dimension
+        self.parameter_embedding = nn.Linear(num_parameters, d_model)
+
+        # Input embeddings for magnitude and phase components
+        self.magnitude_embedding = nn.Linear(1, d_model)
+        self.phase_sin_embedding = nn.Linear(1, d_model)
+        self.phase_cos_embedding = nn.Linear(1, d_model)
+
+        # Positional encoding to provide sequence position information
+        self.pos_encoder = PositionalEncoding(d_model)
+
+        # Transformer encoder layers
+        encoder_layers = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True  # Use batch_first for more intuitive tensor shapes
+        )
+        
+        # Stack multiple encoder layers
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_layers)
+
+        # Layer normalization for final output
+        self.norm = nn.LayerNorm(d_model)
+
+        # Output projections for magnitude and phase predictions
+        self.output_magnitude = nn.Linear(d_model, 1)
+        self.output_phase_sin = nn.Linear(d_model, 1)
+        self.output_phase_cos = nn.Linear(d_model, 1)
+        
+        # Apply initialization
+        self.apply(_xavier_init)
+
+    def forward(
+        self,
+        magnitude: torch.Tensor,
+        phase_sin: torch.Tensor,
+        phase_cos: torch.Tensor,
+        parameters: torch.Tensor,
+        src_mask: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Forward pass through the transformer model.
+        
+        Args:
+            magnitude: Input magnitude spectrum (batch_size, seq_len)
+            phase_sin: Input phase sine component (batch_size, seq_len)
+            phase_cos: Input phase cosine component (batch_size, seq_len)
+            parameters: Input parameters like crack properties (batch_size, num_params)
+            src_mask: Optional mask for transformer attention (for padding)
+            
+        Returns:
+            Tuple of (predicted magnitude, predicted phase sine, predicted phase cosine)
+        """
+        # Embed input features by expanding to d_model dimension
+        mag_embedding = self.magnitude_embedding(magnitude.unsqueeze(-1))
+        sin_embedding = self.phase_sin_embedding(phase_sin.unsqueeze(-1))
+        cos_embedding = self.phase_cos_embedding(phase_cos.unsqueeze(-1))
+        
+        # Combine embeddings by addition
+        src = mag_embedding + sin_embedding + cos_embedding
+
+        # Embed parameters and expand to sequence length
+        param_embedding = self.parameter_embedding(parameters).unsqueeze(1)
+        param_embedding = param_embedding.expand(-1, src.size(1), -1)
+
+        # Combine input and parameter embeddings
+        x = src + param_embedding
+
+        # Add positional encoding for sequence awareness
+        x = self.pos_encoder(x)
+
+        # Apply transformer encoder
+        output = self.transformer_encoder(x, src_mask)
+
+        # Apply layer normalization
+        output = self.norm(output)
+
+        # Decode outputs to magnitude and phase components
+        output_magnitude = self.output_magnitude(output).squeeze(-1)
+        output_phase_sin = self.output_phase_sin(output).squeeze(-1)
+        output_phase_cos = self.output_phase_cos(output).squeeze(-1)
+        
+        # Normalize phase sin and cos to ensure unit circle (sin²+cos²=1)
+        phase_norm = torch.sqrt(output_phase_sin**2 + output_phase_cos**2) + 1e-6
+        output_phase_sin = output_phase_sin / phase_norm
+        output_phase_cos = output_phase_cos / phase_norm
+
+        return output_magnitude, output_phase_sin, output_phase_cos
+
+
+def train_model(
+    model: nn.Module,
+    train_loader: DataLoader,
+    num_epochs: int = 300,
+    learning_rate: float = 5e-5,
+    device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
+    weight_decay: float = 0.05,
+    warmup_epochs: int = 10
+) -> dict:
+    """
+    Train the transformer model.
+    
+    Args:
+        model: The transformer model to train
+        train_loader: DataLoader with training data
+        num_epochs: Number of training epochs
+        learning_rate: Maximum learning rate
+        device: Device to train on ('cuda' or 'cpu')
+        weight_decay: Weight decay for regularization
+        warmup_epochs: Number of warmup epochs for learning rate scheduler
+        
+    Returns:
+        Dictionary of training losses for plotting
+    """
+    # Move model to specified device
+    model = model.to(device)
+    
+    # Initialize optimizer with weight decay for regularization
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+
+    # Learning rate scheduler with warm-up and cosine decay
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=learning_rate,
+        epochs=num_epochs,
+        steps_per_epoch=len(train_loader),
+        pct_start=warmup_epochs/num_epochs,
+        anneal_strategy='cos'
+    )
+    
+    # Use MSE loss for regression tasks
+    mse_criterion = nn.MSELoss()
+    
+    # Track losses
+    train_losses = {'total': [], 'magnitude': [], 'phase': []}
+
+    for epoch in range(num_epochs):
+        # Set model to training mode
+        model.train()
+        train_loss = 0.0
+        mag_loss_sum = 0.0
+        phase_loss_sum = 0.0
+        
+        for batch in train_loader:
+            # Unpack batch data
+            batch_magnitude, batch_phase_sin, batch_phase_cos, batch_params, \
+            target_magnitude, target_phase_sin, target_phase_cos = [b.to(device) for b in batch]
+
+            # Zero the parameter gradients
+            optimizer.zero_grad()
+            
+            # Forward pass
+            pred_magnitude, pred_phase_sin, pred_phase_cos = model(
+                batch_magnitude, batch_phase_sin, batch_phase_cos, batch_params
+            )
+            
+            # Compute losses for magnitude and phase components
+            magnitude_loss = mse_criterion(pred_magnitude, target_magnitude)
+            
+            # For phase, calculate the angular distance through sin/cos representation
+            phase_loss = 0.5 * (
+                mse_criterion(pred_phase_sin, target_phase_sin) + 
+                mse_criterion(pred_phase_cos, target_phase_cos)
+            )
+            
+            # Total loss (you can adjust weights if needed)
+            loss = magnitude_loss + phase_loss
+            
+            # Backpropagation
+            loss.backward()
+            
+            # Update parameters
+            optimizer.step()
+            
+            # Update learning rate
+            scheduler.step()
+
+            # Track losses
+            train_loss += loss.item()
+            mag_loss_sum += magnitude_loss.item()
+            phase_loss_sum += phase_loss.item()
+
+        # Calculate average losses for the epoch
+        train_loss /= len(train_loader)
+        mag_loss_avg = mag_loss_sum / len(train_loader)
+        phase_loss_avg = phase_loss_sum / len(train_loader)
+        
+        # Store losses for plotting
+        train_losses['total'].append(train_loss)
+        train_losses['magnitude'].append(mag_loss_avg)
+        train_losses['phase'].append(phase_loss_avg)
+
+        # Print progress every 10 epochs
+        if (epoch + 1) % 10 == 0:
+            print(f'Epoch [{epoch+1}/{num_epochs}], Train Loss: {train_loss:.6f}, '
+                  f'Mag Loss: {mag_loss_avg:.6f}, Phase Loss: {phase_loss_avg:.6f}')
+
+    return train_losses
+
+
+def visualize_predictions(
+    model: nn.Module,
+    dataset: TimeSeriesDataset,
+    indices: list,
+    device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
+    save_path: str = './'
+):
+    """
+    Visualize model predictions in both frequency and time domains.
+    
+    Args:
+        model: Trained transformer model
+        dataset: Dataset containing the samples
+        indices: List of sample indices to visualize
+        device: Device to run inference on
+        save_path: Directory to save visualization plots
+    """
+    model = model.to(device)
+    model.eval()
+    
+    for idx in indices:
+        try:
+            # Get data for the specified index
+            input_magnitude = dataset.input_magnitude[idx].unsqueeze(0).to(device)
+            input_phase_sin = dataset.input_phase_sin[idx].unsqueeze(0).to(device)
+            input_phase_cos = dataset.input_phase_cos[idx].unsqueeze(0).to(device)
+            parameters = dataset.parameters[idx].unsqueeze(0).to(device)
+            
+            # Get target data
+            target_magnitude = dataset.target_magnitude[idx].cpu().numpy()
+            target_phase_sin = dataset.target_phase_sin[idx].cpu().numpy()
+            target_phase_cos = dataset.target_phase_cos[idx].cpu().numpy()
+            target_phase = np.arctan2(target_phase_sin, target_phase_cos)
+            
+            # Get predictions
+            with torch.no_grad():
+                pred_magnitude, pred_phase_sin, pred_phase_cos = model(
+                    input_magnitude, input_phase_sin, input_phase_cos, parameters
+                )
+            
+            # Convert to numpy for plotting
+            pred_magnitude_np = pred_magnitude[0].cpu().numpy()
+            pred_phase_sin_np = pred_phase_sin[0].cpu().numpy()
+            pred_phase_cos_np = pred_phase_cos[0].cpu().numpy()
+            pred_phase = np.arctan2(pred_phase_sin_np, pred_phase_cos_np)
+            
+        except Exception as e:
+            print(f"Error processing sample {idx}: {e}")
+            continue
+        
+        # Plot frequency domain comparison
+        plt.figure(figsize=(12, 10))
+        
+        # Plot magnitude
+        plt.subplot(2, 1, 1)
+        plt.plot(target_magnitude, label='Target Magnitude')
+        plt.plot(pred_magnitude_np, label='Predicted Magnitude')
+        plt.title(f'Frequency Domain Comparison - Sample {idx} (Normalized)')
+        plt.ylabel('Normalized Magnitude')
+        plt.legend()
+        plt.grid(True)
+        
+        # Plot phase
+        plt.subplot(2, 1, 2)
+        plt.plot(target_phase, label='Target Phase')
+        plt.plot(pred_phase, label='Predicted Phase')
+        plt.xlabel('Frequency Bin')
+        plt.ylabel('Phase (radians)')
+        plt.legend()
+        plt.grid(True)
+        
+        plt.tight_layout()
+        plt.savefig(f'{save_path}freq_domain_comparison_{idx}.png')
+        plt.close()
+        
+        # Reconstruct predicted time series from model output
+        pred_time = dataset.reconstruct_time_series(
+            pred_magnitude_np, pred_phase_sin_np, pred_phase_cos_np, idx
+        )
+        
+        # Get original sampled time series data (not reconstructed)
+        # This is the actual target data sampled from the time domain
+        target_time = dataset.target_time_sampled[idx]
+        
+        # Get input time series for reference
+        input_time = dataset.input_time_sampled[idx]
+        
+        # Plot time domain comparison
+        plt.figure(figsize=(12, 6))
+        plt.plot(target_time, label='Original Target (2D SFEM)')
+        plt.plot(pred_time, label='Predicted (2D SFEM)')
+        plt.plot(input_time, label='Input (1D SFEM)', alpha=0.5)
+        plt.title(f'Time Domain Comparison - Sample {idx}')
+        plt.xlabel('Time Step')
+        plt.ylabel('Displacement')
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(f'{save_path}time_domain_comparison_{idx}.png')
+        plt.close()
+
+
+def main():
+    """Main function to run the entire pipeline."""
+    # Set device
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"Using device: {device}")
+    
+    # Load data
+    print("Loading data...")
+    input_data = pd.read_csv('displacement_timeseries1d.csv', header=None, skiprows=1).values
+    target_data = pd.read_csv('results/displacement_timeseries.csv', header=None, skiprows=1).values
+    parameters_full = pd.read_csv('results/crack_parameters.csv', header=None, skiprows=1).values
+    # Select only crackloc, crackwid, and crackdep
+    parameters = parameters_full[:, [1, 2, 3]]  # Assuming these are columns 1, 2, 3
+    
+    print(f"Input data shape: {input_data.shape}")
+    print(f"Target data shape: {target_data.shape}")
+    print(f"Parameters shape: {parameters.shape}")
+
+    # Create dataset using all data
+    print("Creating dataset...")
+    train_dataset = TimeSeriesDataset(
+        input_data,
+        parameters,
+        target_data,
+        device=device
+    )
+
+    # Create dataloader
+    train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
+    
+    print(f"Training samples: {len(train_dataset)}")
+    print(f"Frequency bins after sampling: {train_dataset.fft_length}")
+
+    # Initialize model
+    model = TransformerModel(num_parameters=parameters.shape[1])
+    print(f"Model parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
+
+    # Train model
+    print("Training model...")
+    train_losses = train_model(model, train_loader, num_epochs=300)
+
+    # Plot training losses
+    plt.figure(figsize=(12, 6))
+    plt.plot(train_losses['total'], label='Total Loss')
+    plt.plot(train_losses['magnitude'], label='Magnitude Loss')
+    plt.plot(train_losses['phase'], label='Phase Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title('Training Losses Over Time')
+    plt.legend()
+    plt.grid(True)
+    plt.yscale('log')
+    plt.savefig('training_losses.png')
+    plt.close()
+
+    # Visualize predictions for a few samples
+    print("Visualizing predictions...")
+    # Choose some samples to visualize
+    vis_indices = [0, 10, 20, 30]  # Example indices
+    visualize_predictions(model, train_dataset, vis_indices)
+
+    # Save model
+    print("Saving model...")
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'train_losses': train_losses,
+    }, 'transformer_model_time_sampled.pth')
+    print("Model saved successfully.")
+
+if __name__ == '__main__':
+    main()

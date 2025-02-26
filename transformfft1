@@ -171,25 +171,6 @@ class TimeSeriesDataset(Dataset):
         time_series = np.real(ifft(complex_spectrum))
         
         return time_series
-    
-    def denormalize_magnitude(self, magnitude, idx: int) -> np.ndarray:
-        """
-        Optional method to denormalize magnitude values if original scale is needed.
-        
-        Args:
-            magnitude: Normalized magnitude spectrum
-            idx: Index of the sample
-            
-        Returns:
-            Denormalized magnitude spectrum
-        """
-        if isinstance(magnitude, torch.Tensor):
-            magnitude = magnitude.cpu().numpy()
-        
-        # Convert magnitude back to original scale
-        denormalized = magnitude * self.target_mag_std[idx] + self.target_mag_mean[idx]
-        
-        return denormalized
 
 
 class PositionalEncoding(nn.Module):
@@ -281,7 +262,7 @@ class TransformerModel(nn.Module):
             nhead=nhead,
             dim_feedforward=dim_feedforward,
             dropout=dropout,
-            batch_first=True  # Use batch_first for more intuitive tensor shapes
+            batch_first=True 
         )
         
         # Stack multiple encoder layers
@@ -359,7 +340,7 @@ class TransformerModel(nn.Module):
 def train_model(
     model: nn.Module,
     train_loader: DataLoader,
-    num_epochs: int = 300,
+    num_epochs: int = 1000,
     learning_rate: float = 5e-5,
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
     weight_decay: float = 0.05,
@@ -538,34 +519,51 @@ def visualize_predictions(
         plt.grid(True)
         
         plt.tight_layout()
-        plt.savefig(f'{save_path}freq_domain_comparison_{idx}.png')
-        plt.close()
-        
+       
+        plt.show()
+    
         # Reconstruct predicted time series from model output
         pred_time = dataset.reconstruct_time_series(
             pred_magnitude_np, pred_phase_sin_np, pred_phase_cos_np, idx
         )
-        
-        # Get original sampled time series data (not reconstructed)
-        # This is the actual target data sampled from the time domain
+
+        # Get original sampled time series data
         target_time = dataset.target_time_sampled[idx]
-        
-        # Get input time series for reference
         input_time = dataset.input_time_sampled[idx]
-        
-        # Plot time domain comparison
+
+        # Normalize all signals to range [-1, 1]
+        def normalize_to_range(signal):
+            """Normalize signal to range [-1, 1]"""
+            signal_min = np.min(signal)
+            signal_max = np.max(signal)
+            signal_range = signal_max - signal_min
+            
+            # Handle the case where signal is constant (range = 0)
+            if signal_range == 0:
+                return np.zeros_like(signal)
+            
+            # Scale to [-1, 1]
+            return 2 * (signal - signal_min) / signal_range - 1
+
+        # Apply normalization to all signals
+        target_time_normalized = normalize_to_range(target_time)
+        pred_time_normalized = normalize_to_range(pred_time)
+        input_time_normalized = normalize_to_range(input_time)
+
+        # Plot time domain comparison with all signals normalized to [-1, 1]
         plt.figure(figsize=(12, 6))
-        plt.plot(target_time, label='Original Target (2D SFEM)')
-        plt.plot(pred_time, label='Predicted (2D SFEM)')
-        plt.plot(input_time, label='Input (1D SFEM)', alpha=0.5)
-        plt.title(f'Time Domain Comparison - Sample {idx}')
+        plt.plot(target_time_normalized, label='Original Target (2D SFEM)')
+        plt.plot(pred_time_normalized, label='Predicted (2D SFEM)')
+        #plt.plot(input_time_normalized, label='Input (1D SFEM)', alpha=0.5)
+        plt.title(f'Time Domain Comparison - Sample {idx} (Normalized to [-1, 1])')
         plt.xlabel('Time Step')
-        plt.ylabel('Displacement')
+        plt.ylabel('Normalized Displacement')
+        plt.ylim([-1.1, 1.1])  # Add a small margin for better visualization
         plt.legend()
         plt.grid(True)
         plt.tight_layout()
-        plt.savefig(f'{save_path}time_domain_comparison_{idx}.png')
-        plt.close()
+        
+        plt.show()
 
 
 def main():
@@ -607,7 +605,7 @@ def main():
 
     # Train model
     print("Training model...")
-    train_losses = train_model(model, train_loader, num_epochs=300)
+    train_losses = train_model(model, train_loader, num_epochs=1000)
 
     # Plot training losses
     plt.figure(figsize=(12, 6))
@@ -620,8 +618,8 @@ def main():
     plt.legend()
     plt.grid(True)
     plt.yscale('log')
-    plt.savefig('training_losses.png')
-    plt.close()
+    
+    plt.show()
 
     # Visualize predictions for a few samples
     print("Visualizing predictions...")

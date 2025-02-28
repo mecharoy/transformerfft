@@ -1,0 +1,299 @@
+#partitions 3 trannsformer model
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from torch.utils.data import Dataset, DataLoader
+
+from typing import Tuple, Optional
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model: int, max_len: int = 400):
+        super().__init__()
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-np.log(10000.0) / d_model))
+        pe = torch.zeros(1, max_len, d_model)
+        pe[0, :, 0::2] = torch.sin(position * div_term)
+        pe[0, :, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x + self.pe[:, :x.size(1)]
+
+class TimeSeriesDataset(Dataset):
+    def __init__(self, input_data: np.ndarray, parameters: np.ndarray, target_data: np.ndarray):
+        # Convert input data to float
+        input_data = input_data.astype(np.float32)
+        parameters = parameters.astype(np.float32)
+        target_data = target_data.astype(np.float32)
+
+        # Normalize input data
+        input_mean = np.mean(input_data, axis=1, keepdims=True)
+        input_std = np.std(input_data, axis=1, keepdims=True)
+        input_std[input_std == 0] = 1  # Prevent division by zero
+        input_normalized = (input_data - input_mean) / input_std
+
+        # Normalize parameters
+        param_mean = np.mean(parameters, axis=0, keepdims=True)
+        param_std = np.std(parameters, axis=0, keepdims=True)
+        param_std[param_std == 0] = 1  # Prevent division by zero
+        parameters_normalized = (parameters - param_mean) / param_std
+
+        # Normalize target data
+        target_mean = np.mean(target_data, axis=1, keepdims=True)
+        target_std = np.std(target_data, axis=1, keepdims=True)
+        target_std[target_std == 0] = 1  # Prevent division by zero
+        target_normalized = (target_data - target_mean) / target_std
+
+        self.input_data = torch.FloatTensor(input_normalized)
+        self.parameters = torch.FloatTensor(parameters_normalized)
+        self.target_data = torch.FloatTensor(target_normalized)
+
+        # Store normalization parameters for later use
+        self.input_mean = input_mean
+        self.input_std = input_std
+        self.param_mean = param_mean
+        self.param_std = param_std
+        self.target_mean = target_mean
+        self.target_std = target_std
+
+        # Sample points for three segments: 0-100, 100-150, 150-300 microseconds
+        total_points = input_data.shape[1]
+        seg1_end = int(100/300 * total_points)
+        seg2_end = int(150/300 * total_points)
+
+        # Create indices for each segment, maintaining relative time proportions
+        indices1 = np.linspace(0, seg1_end, 133, dtype=int)  # 0-100 μs
+        indices2 = np.linspace(seg1_end, seg2_end, 67, dtype=int)  # 100-150 μs
+        indices3 = np.linspace(seg2_end, total_points-1, 200, dtype=int)  # 150-300 μs
+
+        # Split input and target data into segments
+        self.input_data_seg1 = self.input_data[:, indices1]
+        self.input_data_seg2 = self.input_data[:, indices2]
+        self.input_data_seg3 = self.input_data[:, indices3]
+
+        self.target_data_seg1 = self.target_data[:, indices1]
+        self.target_data_seg2 = self.target_data[:, indices2]
+        self.target_data_seg3 = self.target_data[:, indices3]
+
+    def __len__(self) -> int:
+        return len(self.input_data)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        return (self.input_data_seg1[idx], self.input_data_seg2[idx], self.input_data_seg3[idx],
+                self.parameters[idx],
+                self.target_data_seg1[idx], self.target_data_seg2[idx], self.target_data_seg3[idx])
+
+class TransformerModel(nn.Module):
+    def __init__(
+        self,
+        d_model: int = 128,
+        nhead: int = 8,
+        num_layers: int = 6,
+        dim_feedforward: int = 512,
+        dropout: float = 0.2,
+        num_parameters: int = 3
+    ):
+        super().__init__()
+
+        # Initialize weights using Xavier uniform initialization
+        def _xavier_init(module):
+            if isinstance(module, (nn.Linear, nn.Conv1d)):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+
+        self.apply(_xavier_init)
+
+        # Parameter embedding
+        self.parameter_embedding = nn.Linear(num_parameters, d_model)
+
+        # Input embedding
+        self.input_embedding = nn.Linear(1, d_model)
+
+        # Positional encoding for each segment
+        self.pos_encoder1 = PositionalEncoding(d_model, max_len=133)  # 0-100 μs
+        self.pos_encoder2 = PositionalEncoding(d_model, max_len=67)   # 100-150 μs
+        self.pos_encoder3 = PositionalEncoding(d_model, max_len=200)  # 150-300 μs
+
+        # Transformer encoders for each segment
+        encoder_layers1 = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True
+        )
+        encoder_layers2 = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True
+        )
+        encoder_layers3 = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True
+        )
+
+        self.transformer_encoder1 = nn.TransformerEncoder(encoder_layers1, num_layers)
+        self.transformer_encoder2 = nn.TransformerEncoder(encoder_layers2, num_layers)
+        self.transformer_encoder3 = nn.TransformerEncoder(encoder_layers3, num_layers)
+
+        # Layer normalization for each segment
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.norm3 = nn.LayerNorm(d_model)
+
+        # Output layers for each segment
+        self.output_layer1 = nn.Linear(d_model, 1)
+        self.output_layer2 = nn.Linear(d_model, 1)
+        self.output_layer3 = nn.Linear(d_model, 1)
+
+    def forward(
+        self,
+        src1: torch.Tensor,
+        src2: torch.Tensor,
+        src3: torch.Tensor,
+        parameters: torch.Tensor,
+        src_mask: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # Embed input sequences
+        src1 = self.input_embedding(src1.unsqueeze(-1))
+        src2 = self.input_embedding(src2.unsqueeze(-1))
+        src3 = self.input_embedding(src3.unsqueeze(-1))
+
+        # Embed parameters and expand for each segment
+        param_embedding = self.parameter_embedding(parameters).unsqueeze(1)
+        param_embedding1 = param_embedding.expand(-1, src1.size(1), -1)
+        param_embedding2 = param_embedding.expand(-1, src2.size(1), -1)
+        param_embedding3 = param_embedding.expand(-1, src3.size(1), -1)
+
+        # Combine input and parameter embeddings for each segment
+        x1 = src1 + param_embedding1
+        x2 = src2 + param_embedding2
+        x3 = src3 + param_embedding3
+
+        # Add positional encoding for each segment
+        x1 = self.pos_encoder1(x1)
+        x2 = self.pos_encoder2(x2)
+        x3 = self.pos_encoder3(x3)
+
+        # Transform each segment
+        output1 = self.transformer_encoder1(x1, src_mask)
+        output2 = self.transformer_encoder2(x2, src_mask)
+        output3 = self.transformer_encoder3(x3, src_mask)
+
+        # Apply layer normalization
+        output1 = self.norm1(output1)
+        output2 = self.norm2(output2)
+        output3 = self.norm3(output3)
+
+        # Decode each segment
+        output1 = self.output_layer1(output1)
+        output2 = self.output_layer2(output2)
+        output3 = self.output_layer3(output3)
+
+        return output1.squeeze(-1), output2.squeeze(-1), output3.squeeze(-1)
+
+def train_model(
+    model: nn.Module,
+    train_loader: DataLoader,
+    num_epochs: int = 1000,
+    learning_rate: float = 5e-5,
+    device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
+) -> list:
+    model = model.to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.05)
+
+    # Learning rate scheduler with warm-up and cosine decay
+    warmup_epochs = 10
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=learning_rate,
+        epochs=num_epochs,
+        steps_per_epoch=len(train_loader),
+        pct_start=warmup_epochs/num_epochs,
+        anneal_strategy='cos'
+    )
+    criterion = nn.MSELoss()
+
+    train_losses = []
+
+    for epoch in range(num_epochs):
+        # Training
+        model.train()
+        train_loss = 0.0
+        for batch_in1, batch_in2, batch_in3, batch_params, batch_target1, batch_target2, batch_target3 in train_loader:
+            batch_in1 = batch_in1.to(device)
+            batch_in2 = batch_in2.to(device)
+            batch_in3 = batch_in3.to(device)
+            batch_params = batch_params.to(device)
+            batch_target1 = batch_target1.to(device)
+            batch_target2 = batch_target2.to(device)
+            batch_target3 = batch_target3.to(device)
+
+            optimizer.zero_grad()
+            output1, output2, output3 = model(batch_in1, batch_in2, batch_in3, batch_params)
+            loss = (criterion(output1, batch_target1) +
+                   criterion(output2, batch_target2) +
+                   criterion(output3, batch_target3)) / 3
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+
+            train_loss += loss.item()
+
+        train_loss /= len(train_loader)
+        train_losses.append(train_loss)
+
+        if (epoch + 1) % 10 == 0:
+            print(f'Epoch [{epoch+1}/{num_epochs}], Train Loss: {train_loss:.6f}')
+
+    return train_losses
+
+def main():
+    # Load data
+    input_data = pd.read_csv('displacement_timeseries1d.csv', header=None, skiprows=1).values
+    target_data = pd.read_csv('displacement_timeseries.csv', header=None, skiprows=1).values
+    parameters_full = pd.read_csv('crack_parameters.csv', header=None, skiprows=1).values
+    # Select only crackloc, crackwid, and crackdep
+    parameters = parameters_full[:, [1, 2, 3]]  # Assuming these are the first three columns
+
+    # Create dataset using all data
+    train_dataset = TimeSeriesDataset(
+        input_data,
+        parameters,
+        target_data
+    )
+
+    # Create dataloader
+    train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
+
+    # Initialize model
+    model = TransformerModel()
+
+    # Train model
+    train_losses = train_model(model, train_loader)
+
+    # Plot training loss
+    plt.figure(figsize=(10, 6))
+    plt.plot(train_losses, label='Training Loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title('Training Loss Over Time')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig('loss_curve.png')
+    plt.close()
+
+    # Save model
+    torch.save(model.state_dict(), 'transformer_model.pth')
+
+if __name__ == '__main__':
+    main()

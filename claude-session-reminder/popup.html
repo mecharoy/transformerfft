@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Session Reminder</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Claude Limit Reminder</h1>
+
+    <div class="status-section">
+      <div class="status-row">
+        <span class="status-label">Status:</span>
+        <span id="status-text" class="status-value">Checking...</span>
+      </div>
+      <div id="countdown" class="countdown"></div>
+      <div id="reset-time-display" class="reset-time"></div>
+    </div>
+
+    <div class="fetch-section">
+      <div class="fetch-info">
+        <span class="dot" id="fetch-dot"></span>
+        <span id="fetch-status">Auto-fetching every 5 min</span>
+      </div>
+      <div id="last-fetch" class="last-fetch"></div>
+      <button id="fetch-now-btn" class="btn small">Refresh Now</button>
+    </div>
+
+    <div class="settings-section">
+      <h2>Settings</h2>
+      <div class="input-group">
+        <label for="reminder-minutes">Remind me (minutes before reset):</label>
+        <input type="number" id="reminder-minutes" value="30" min="1" max="180">
+      </div>
+      <button id="save-btn" class="btn primary">Save Settings</button>
+    </div>
+
+    <div id="message" class="message"></div>
+
+    <div class="info-section">
+      <h3>How it works</h3>
+      <ul>
+        <li>Extension auto-fetches reset time every 5 minutes</li>
+        <li>Also detects time when you browse claude.ai</li>
+        <li>Notifies you before your limit resets</li>
+        <li>Make sure you're logged into Claude!</li>
+      </ul>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

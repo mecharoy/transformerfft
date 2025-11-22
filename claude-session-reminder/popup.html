@@ -1,50 +1,94 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Claude Session Reminder</title>
-  <link rel="stylesheet" href="popup.css">
+  <title>Claude Reminder</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #1a1a2e;
+      color: #e8e8e8;
+      width: 280px;
+      padding: 16px;
+    }
+    h1 {
+      font-size: 14px;
+      text-align: center;
+      margin-bottom: 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #333;
+    }
+    .countdown {
+      font-size: 32px;
+      font-weight: bold;
+      text-align: center;
+      color: #c9a227;
+      font-family: monospace;
+      margin: 16px 0;
+    }
+    .status {
+      text-align: center;
+      font-size: 12px;
+      color: #888;
+      margin-bottom: 16px;
+    }
+    .status.detected { color: #4ade80; }
+    .status.warning { color: #fbbf24; }
+    .settings {
+      background: rgba(255,255,255,0.05);
+      padding: 10px;
+      border-radius: 6px;
+      margin-bottom: 12px;
+    }
+    label {
+      display: block;
+      font-size: 11px;
+      color: #888;
+      margin-bottom: 4px;
+    }
+    input {
+      width: 100%;
+      padding: 6px;
+      border: 1px solid #333;
+      border-radius: 4px;
+      background: #16213e;
+      color: #fff;
+      font-size: 13px;
+    }
+    button {
+      width: 100%;
+      padding: 8px;
+      margin-top: 8px;
+      border: none;
+      border-radius: 4px;
+      background: #c9a227;
+      color: #1a1a2e;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    button:hover { background: #d4af37; }
+    .hint {
+      font-size: 10px;
+      color: #666;
+      text-align: center;
+      margin-top: 12px;
+    }
+    .hint a { color: #c9a227; }
+  </style>
 </head>
 <body>
-  <div class="container">
-    <h1>Claude Limit Reminder</h1>
-
-    <div class="status-section">
-      <div class="status-row">
-        <span class="status-label">Status:</span>
-        <span id="status-text" class="status-value">Checking...</span>
-      </div>
-      <div id="countdown" class="countdown"></div>
-      <div id="reset-time-display" class="reset-time"></div>
-    </div>
-
-    <div class="detect-section">
-      <p class="detect-hint">Open <a href="https://claude.ai/settings/usage" target="_blank">Claude Usage</a> page, then click:</p>
-      <button id="detect-btn" class="btn primary">Detect Reset Time from Page</button>
-    </div>
-
-    <div class="settings-section">
-      <h2>Settings</h2>
-      <div class="input-group">
-        <label for="reminder-minutes">Remind me (minutes before reset):</label>
-        <input type="number" id="reminder-minutes" value="30" min="1" max="180">
-      </div>
-      <button id="save-btn" class="btn secondary">Save Settings</button>
-    </div>
-
-    <div id="message" class="message"></div>
-
-    <div class="info-section">
-      <h3>How to use</h3>
-      <ul>
-        <li>Go to claude.ai/settings/usage</li>
-        <li>Click "Detect Reset Time from Page"</li>
-        <li>You'll be notified before limit resets</li>
-      </ul>
-    </div>
+  <h1>Claude Limit Reminder</h1>
+  <div id="countdown" class="countdown">--:--:--</div>
+  <div id="status" class="status">Waiting for detection...</div>
+  <div class="settings">
+    <label>Remind me (minutes before):</label>
+    <input type="number" id="minutes" value="30" min="1" max="180">
+    <button id="save">Save</button>
   </div>
-
+  <div class="hint">
+    Visit <a href="https://claude.ai/settings/usage" target="_blank">Usage Settings</a> to detect reset time
+  </div>
   <script src="popup.js"></script>
 </body>
 </html>

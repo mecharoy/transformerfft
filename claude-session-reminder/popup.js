@@ -1,88 +1,92 @@
+// Popup script for Claude Session Limit Reminder
+// Works with both Chrome and Firefox
+
+const browser = window.browser || window.chrome;
+
 document.addEventListener('DOMContentLoaded', async () => {
-  const resetTimeInput = document.getElementById('reset-time');
   const reminderMinutesInput = document.getElementById('reminder-minutes');
   const saveBtn = document.getElementById('save-btn');
-  const clearBtn = document.getElementById('clear-btn');
+  const fetchNowBtn = document.getElementById('fetch-now-btn');
   const statusText = document.getElementById('status-text');
   const countdownEl = document.getElementById('countdown');
+  const resetTimeDisplay = document.getElementById('reset-time-display');
   const messageEl = document.getElementById('message');
+  const lastFetchEl = document.getElementById('last-fetch');
+  const fetchDot = document.getElementById('fetch-dot');
 
   // Load saved settings
-  const data = await chrome.storage.local.get(['resetTime', 'reminderMinutes']);
-
-  if (data.resetTime) {
-    const resetDate = new Date(data.resetTime);
-    resetTimeInput.value = formatDateTimeLocal(resetDate);
-  }
+  const data = await browser.storage.local.get(['reminderMinutes', 'resetTime', 'lastFetch']);
 
   if (data.reminderMinutes) {
     reminderMinutesInput.value = data.reminderMinutes;
   }
 
-  // Update status
+  // Update status immediately and start interval
   updateStatus();
-
-  // Start countdown timer
   setInterval(updateStatus, 1000);
 
   // Save button handler
   saveBtn.addEventListener('click', async () => {
-    const resetTimeValue = resetTimeInput.value;
     const reminderMinutes = parseInt(reminderMinutesInput.value, 10);
 
-    if (!resetTimeValue) {
-      showMessage('Please set a reset time', 'error');
+    if (isNaN(reminderMinutes) || reminderMinutes < 1 || reminderMinutes > 180) {
+      showMessage('Please enter a valid number (1-180)', 'error');
       return;
     }
 
-    if (isNaN(reminderMinutes) || reminderMinutes < 1) {
-      showMessage('Please enter valid reminder minutes', 'error');
-      return;
-    }
-
-    const resetTime = new Date(resetTimeValue).getTime();
-
-    if (resetTime <= Date.now()) {
-      showMessage('Reset time must be in the future', 'error');
-      return;
-    }
-
-    // Save to storage
-    await chrome.storage.local.set({
-      resetTime,
-      reminderMinutes
+    // Send to background script
+    browser.runtime.sendMessage({
+      action: 'setReminderMinutes',
+      minutes: reminderMinutes
     });
 
-    // Set alarm in background
-    chrome.runtime.sendMessage({
-      action: 'setReminder',
-      resetTime,
-      reminderMinutes
-    });
-
-    showMessage('Reminder set successfully!', 'success');
-    updateStatus();
+    showMessage('Settings saved!', 'success');
   });
 
-  // Clear button handler
-  clearBtn.addEventListener('click', async () => {
-    await chrome.storage.local.remove(['resetTime', 'reminderMinutes']);
-    chrome.runtime.sendMessage({ action: 'clearReminder' });
+  // Fetch now button handler
+  fetchNowBtn.addEventListener('click', async () => {
+    fetchNowBtn.disabled = true;
+    fetchNowBtn.textContent = 'Fetching...';
 
-    resetTimeInput.value = '';
-    reminderMinutesInput.value = '30';
+    try {
+      await browser.runtime.sendMessage({ action: 'fetchNow' });
+      showMessage('Fetched! Check if reset time updated.', 'success');
+    } catch (e) {
+      showMessage('Fetch failed. Are you logged into Claude?', 'error');
+    }
 
-    showMessage('Reminder cleared', 'success');
-    updateStatus();
+    setTimeout(() => {
+      fetchNowBtn.disabled = false;
+      fetchNowBtn.textContent = 'Refresh Now';
+      updateStatus();
+    }, 1000);
   });
 
   async function updateStatus() {
-    const data = await chrome.storage.local.get(['resetTime', 'reminderMinutes']);
+    const data = await browser.storage.local.get(['resetTime', 'reminderMinutes', 'lastFetch']);
 
+    // Update last fetch time
+    if (data.lastFetch) {
+      const ago = Math.round((Date.now() - data.lastFetch) / 60000);
+      if (ago < 1) {
+        lastFetchEl.textContent = 'Last checked: just now';
+      } else if (ago === 1) {
+        lastFetchEl.textContent = 'Last checked: 1 minute ago';
+      } else {
+        lastFetchEl.textContent = `Last checked: ${ago} minutes ago`;
+      }
+      fetchDot.classList.add('active');
+    } else {
+      lastFetchEl.textContent = 'Not fetched yet';
+      fetchDot.classList.remove('active');
+    }
+
+    // Update countdown
     if (!data.resetTime) {
-      statusText.textContent = 'No reminder set';
-      statusText.className = 'inactive';
-      countdownEl.textContent = '';
+      statusText.textContent = 'Waiting for data...';
+      statusText.className = 'status-value pending';
+      countdownEl.textContent = '--:--:--';
+      resetTimeDisplay.textContent = 'Visit claude.ai or wait for auto-fetch';
       return;
     }
 
@@ -91,24 +95,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     const timeUntilReset = resetTime - now;
 
     if (timeUntilReset <= 0) {
-      statusText.textContent = 'Reset time passed!';
-      statusText.className = 'warning';
-      countdownEl.textContent = 'Limit should be reset now';
+      statusText.textContent = 'Limit should be reset!';
+      statusText.className = 'status-value warning';
+      countdownEl.textContent = '00:00:00';
+      resetTimeDisplay.textContent = 'Your usage limit has reset';
       return;
     }
 
-    const reminderTime = resetTime - (data.reminderMinutes * 60 * 1000);
+    const reminderMinutes = data.reminderMinutes || 30;
+    const reminderTime = resetTime - (reminderMinutes * 60 * 1000);
     const timeUntilReminder = reminderTime - now;
 
     if (timeUntilReminder <= 0) {
-      statusText.textContent = 'Reminder triggered!';
-      statusText.className = 'warning';
+      statusText.textContent = 'Use your remaining capacity!';
+      statusText.className = 'status-value warning';
     } else {
       statusText.textContent = 'Reminder active';
-      statusText.className = 'active';
+      statusText.className = 'status-value active';
     }
 
     countdownEl.textContent = formatCountdown(timeUntilReset);
+    resetTimeDisplay.textContent = `Resets at ${new Date(resetTime).toLocaleTimeString()}`;
   }
 
   function formatCountdown(ms) {
@@ -125,15 +132,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     return num.toString().padStart(2, '0');
   }
 
-  function formatDateTimeLocal(date) {
-    const year = date.getFullYear();
-    const month = pad(date.getMonth() + 1);
-    const day = pad(date.getDate());
-    const hours = pad(date.getHours());
-    const minutes = pad(date.getMinutes());
-    return `${year}-${month}-${day}T${hours}:${minutes}`;
-  }
-
   function showMessage(text, type) {
     messageEl.textContent = text;
     messageEl.className = `message ${type}`;
@@ -143,30 +141,3 @@ document.addEventListener('DOMContentLoaded', async () => {
     }, 3000);
   }
 });
-
-// Listen for messages from content script
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action === 'resetTimeDetected') {
-    const resetTimeInput = document.getElementById('reset-time');
-    const resetDate = new Date(message.resetTime);
-    resetTimeInput.value = formatDateTimeLocalGlobal(resetDate);
-
-    const messageEl = document.getElementById('message');
-    messageEl.textContent = 'Reset time detected from Claude page!';
-    messageEl.className = 'message success';
-
-    setTimeout(() => {
-      messageEl.className = 'message';
-    }, 3000);
-  }
-});
-
-function formatDateTimeLocalGlobal(date) {
-  const pad = (num) => num.toString().padStart(2, '0');
-  const year = date.getFullYear();
-  const month = pad(date.getMonth() + 1);
-  const day = pad(date.getDate());
-  const hours = pad(date.getHours());
-  const minutes = pad(date.getMinutes());
-  return `${year}-${month}-${day}T${hours}:${minutes}`;
-}

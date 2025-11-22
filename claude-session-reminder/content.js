@@ -1,138 +1,137 @@
-// Content script to detect reset time from Claude usage settings page
+// Content script for Claude Session Limit Reminder
+// Runs on claude.ai pages to detect reset time
 
 (function() {
   'use strict';
 
-  // Function to parse reset time from the page
+  const browser = window.browser || window.chrome;
+
+  // Function to parse reset time from visible page content
   function detectResetTime() {
-    // Look for text patterns that indicate reset time
-    // Claude's usage page typically shows something like "Resets in X hours" or a specific time
-
     const pageText = document.body.innerText;
+    const now = Date.now();
 
-    // Common patterns to look for
+    // Patterns to look for
     const patterns = [
       // "Resets in X hours Y minutes"
-      /resets?\s+in\s+(\d+)\s*h(?:ours?)?\s*(?:and\s+)?(\d+)?\s*m(?:in(?:utes?)?)?/i,
-      // "Resets in X hours"
-      /resets?\s+in\s+(\d+)\s*h(?:ours?)?/i,
+      {
+        regex: /resets?\s+in\s+(\d+)\s*(?:hours?|hrs?)\s*(?:and\s+)?(\d+)?\s*(?:minutes?|mins?)?/i,
+        parse: (m) => {
+          let ms = parseInt(m[1], 10) * 60 * 60 * 1000;
+          if (m[2]) ms += parseInt(m[2], 10) * 60 * 1000;
+          return now + ms;
+        }
+      },
       // "Resets in X minutes"
-      /resets?\s+in\s+(\d+)\s*m(?:in(?:utes?)?)?/i,
-      // "Resets at HH:MM"
-      /resets?\s+at\s+(\d{1,2}):(\d{2})\s*(am|pm)?/i,
-      // "X hours until reset"
-      /(\d+)\s*h(?:ours?)?\s*(?:and\s+)?(\d+)?\s*m(?:in(?:utes?)?)?\s*until\s+reset/i,
+      {
+        regex: /resets?\s+in\s+(\d+)\s*(?:minutes?|mins?)/i,
+        parse: (m) => now + parseInt(m[1], 10) * 60 * 1000
+      },
+      // "X hours until" patterns
+      {
+        regex: /(\d+)\s*(?:hours?|hrs?)\s*(?:and\s+)?(\d+)?\s*(?:minutes?|mins?)?\s*until/i,
+        parse: (m) => {
+          let ms = parseInt(m[1], 10) * 60 * 60 * 1000;
+          if (m[2]) ms += parseInt(m[2], 10) * 60 * 1000;
+          return now + ms;
+        }
+      },
+      // "Xh Ym" format
+      {
+        regex: /(\d+)\s*h\s*(\d+)\s*m(?:in)?(?:\s|$|<)/i,
+        parse: (m) => {
+          let ms = parseInt(m[1], 10) * 60 * 60 * 1000;
+          ms += parseInt(m[2], 10) * 60 * 1000;
+          return now + ms;
+        }
+      }
     ];
 
     for (const pattern of patterns) {
-      const match = pageText.match(pattern);
+      const match = pageText.match(pattern.regex);
       if (match) {
-        const resetTime = parseMatchToTime(match, pattern);
-        if (resetTime) {
-          return resetTime;
-        }
+        return pattern.parse(match);
       }
     }
 
-    // Also try to find any element with reset-related classes or data attributes
-    const resetElements = document.querySelectorAll('[class*="reset"], [data-reset], [class*="limit"]');
-    for (const el of resetElements) {
-      const text = el.textContent;
+    return null;
+  }
+
+  // Check for reset time in page's embedded JSON/scripts
+  function detectResetTimeFromScripts() {
+    const scripts = document.querySelectorAll('script');
+    const now = Date.now();
+
+    for (const script of scripts) {
+      const content = script.textContent || '';
+
+      // Look for JSON with reset time
+      const patterns = [
+        /"resetsAt"\s*:\s*"([^"]+)"/,
+        /"reset_at"\s*:\s*"([^"]+)"/,
+        /"resetTime"\s*:\s*"([^"]+)"/,
+        /"expiresAt"\s*:\s*"([^"]+)"/,
+        /"rateLimit"[^}]*"resetsAt"\s*:\s*"([^"]+)"/
+      ];
+
       for (const pattern of patterns) {
-        const match = text.match(pattern);
+        const match = content.match(pattern);
         if (match) {
-          const resetTime = parseMatchToTime(match, pattern);
-          if (resetTime) {
-            return resetTime;
+          const date = new Date(match[1]);
+          if (!isNaN(date.getTime())) {
+            return date.getTime();
           }
         }
       }
-    }
 
-    return null;
-  }
+      // Look for Unix timestamps
+      const timestampPatterns = [
+        /"(?:resetsAt|reset_at|resetTime|expiresAt)"\s*:\s*(\d{10,13})/
+      ];
 
-  function parseMatchToTime(match, pattern) {
-    const now = new Date();
-
-    // Check if it's a "Resets at HH:MM" pattern
-    if (pattern.source.includes('at')) {
-      let hours = parseInt(match[1], 10);
-      const minutes = parseInt(match[2], 10);
-      const ampm = match[3]?.toLowerCase();
-
-      if (ampm === 'pm' && hours !== 12) {
-        hours += 12;
-      } else if (ampm === 'am' && hours === 12) {
-        hours = 0;
-      }
-
-      const resetTime = new Date(now);
-      resetTime.setHours(hours, minutes, 0, 0);
-
-      // If the time has passed today, it's tomorrow
-      if (resetTime <= now) {
-        resetTime.setDate(resetTime.getDate() + 1);
-      }
-
-      return resetTime.getTime();
-    }
-
-    // It's a duration pattern (X hours Y minutes)
-    let totalMinutes = 0;
-
-    if (match[1]) {
-      // Check if this is hours or minutes based on context
-      if (pattern.source.includes('hours') || pattern.source.match(/h(?:ours?)?/)) {
-        totalMinutes += parseInt(match[1], 10) * 60;
-        if (match[2]) {
-          totalMinutes += parseInt(match[2], 10);
+      for (const pattern of timestampPatterns) {
+        const match = content.match(pattern);
+        if (match) {
+          let ts = parseInt(match[1], 10);
+          if (ts < 10000000000) ts *= 1000;
+          return ts;
         }
-      } else {
-        totalMinutes += parseInt(match[1], 10);
       }
-    }
-
-    if (totalMinutes > 0) {
-      return now.getTime() + (totalMinutes * 60 * 1000);
     }
 
     return null;
   }
 
-  // Function to notify the extension
-  function notifyExtension(resetTime) {
-    chrome.runtime.sendMessage({
-      action: 'resetTimeDetected',
-      resetTime: resetTime
-    });
-
-    // Also store in local storage for the popup to read
-    chrome.storage.local.set({
-      detectedResetTime: resetTime,
-      lastDetection: Date.now()
-    });
+  // Send detected time to background script
+  function notifyBackground(resetTime) {
+    if (resetTime && resetTime > Date.now()) {
+      console.log('Claude Session Reminder: Detected reset time:', new Date(resetTime).toLocaleString());
+      browser.runtime.sendMessage({
+        action: 'resetTimeFromContent',
+        resetTime: resetTime
+      }).catch(() => {});
+    }
   }
 
-  // Run detection when page loads
-  function init() {
-    // Wait for page to fully load
-    setTimeout(() => {
-      const resetTime = detectResetTime();
-      if (resetTime) {
-        console.log('Claude Session Reminder: Detected reset time:', new Date(resetTime).toLocaleString());
-        notifyExtension(resetTime);
-      } else {
-        console.log('Claude Session Reminder: Could not detect reset time automatically');
-      }
-    }, 2000);
+  // Run detection
+  function runDetection() {
+    let resetTime = detectResetTime();
+    if (!resetTime) {
+      resetTime = detectResetTimeFromScripts();
+    }
+    if (resetTime) {
+      notifyBackground(resetTime);
+    }
+  }
 
-    // Also set up a mutation observer to detect dynamic content
-    const observer = new MutationObserver((mutations) => {
-      const resetTime = detectResetTime();
-      if (resetTime) {
-        notifyExtension(resetTime);
-      }
+  // Initial detection after page load
+  function init() {
+    // Wait for content to be fully rendered
+    setTimeout(runDetection, 2000);
+
+    // Also observe for dynamic changes
+    const observer = new MutationObserver(() => {
+      runDetection();
     });
 
     observer.observe(document.body, {
@@ -140,9 +139,11 @@
       subtree: true,
       characterData: true
     });
+
+    // Re-run periodically in case content updates
+    setInterval(runDetection, 30000);
   }
 
-  // Run on page load
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   } else {

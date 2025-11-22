@@ -8,32 +8,32 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
   background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
   color: #e8e8e8;
-  min-width: 350px;
+  min-width: 320px;
   padding: 0;
 }
 
 .container {
-  padding: 20px;
+  padding: 16px;
 }
 
 h1 {
-  font-size: 18px;
-  margin-bottom: 16px;
+  font-size: 16px;
+  margin-bottom: 14px;
   color: #fff;
   text-align: center;
   border-bottom: 1px solid #333;
-  padding-bottom: 12px;
+  padding-bottom: 10px;
 }
 
 h2 {
-  font-size: 14px;
+  font-size: 13px;
   margin-bottom: 10px;
   color: #c9a227;
 }
 
 h3 {
-  font-size: 12px;
-  margin-bottom: 8px;
+  font-size: 11px;
+  margin-bottom: 6px;
   color: #888;
 }
 
@@ -41,12 +41,14 @@ h3 {
   background: rgba(255, 255, 255, 0.05);
   border-radius: 8px;
   padding: 12px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
+  text-align: center;
 }
 
-.status {
+.status-row {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   margin-bottom: 8px;
 }
@@ -56,61 +58,86 @@ h3 {
   font-size: 12px;
 }
 
-#status-text {
+.status-value {
   font-weight: 600;
-  font-size: 13px;
+  font-size: 12px;
 }
 
-#status-text.active {
+.status-value.active {
   color: #4ade80;
 }
 
-#status-text.inactive {
-  color: #f87171;
+.status-value.pending {
+  color: #888;
 }
 
-#status-text.warning {
+.status-value.warning {
   color: #fbbf24;
 }
 
 .countdown {
-  font-size: 24px;
+  font-size: 28px;
   font-weight: bold;
-  text-align: center;
   color: #c9a227;
   font-family: 'Courier New', monospace;
+  margin: 8px 0;
+}
+
+.reset-time {
+  font-size: 11px;
+  color: #888;
+}
+
+.fetch-section {
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.fetch-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #888;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #666;
+}
+
+.dot.active {
+  background: #4ade80;
+  box-shadow: 0 0 6px #4ade80;
+}
+
+.last-fetch {
+  font-size: 10px;
+  color: #666;
 }
 
 .settings-section {
   background: rgba(255, 255, 255, 0.03);
   border-radius: 8px;
-  padding: 12px;
-  margin-bottom: 16px;
-}
-
-.hint {
-  font-size: 11px;
-  color: #888;
+  padding: 10px;
   margin-bottom: 12px;
-  line-height: 1.4;
-}
-
-.hint a {
-  color: #c9a227;
-  text-decoration: none;
-}
-
-.hint a:hover {
-  text-decoration: underline;
 }
 
 .input-group {
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 
 .input-group label {
   display: block;
-  font-size: 12px;
+  font-size: 11px;
   color: #aaa;
   margin-bottom: 4px;
 }
@@ -130,24 +157,18 @@ h3 {
   border-color: #c9a227;
 }
 
-.button-group {
-  display: flex;
-  gap: 8px;
-  margin-top: 12px;
-}
-
 .btn {
-  flex: 1;
-  padding: 10px 16px;
+  padding: 8px 14px;
   border: none;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
 .btn.primary {
+  width: 100%;
   background: #c9a227;
   color: #1a1a2e;
 }
@@ -156,22 +177,30 @@ h3 {
   background: #d4af37;
 }
 
-.btn.secondary {
+.btn.small {
+  padding: 6px 12px;
+  font-size: 11px;
   background: #333;
   color: #aaa;
 }
 
-.btn.secondary:hover {
+.btn.small:hover {
   background: #444;
   color: #fff;
 }
 
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .message {
-  padding: 8px 12px;
+  padding: 8px 10px;
   border-radius: 6px;
-  font-size: 12px;
-  margin-bottom: 12px;
+  font-size: 11px;
+  margin-bottom: 10px;
   display: none;
+  text-align: center;
 }
 
 .message.success {
@@ -190,18 +219,18 @@ h3 {
 
 .info-section {
   border-top: 1px solid #333;
-  padding-top: 12px;
+  padding-top: 10px;
 }
 
 .info-section ul {
   list-style: none;
-  font-size: 11px;
-  color: #666;
+  font-size: 10px;
+  color: #555;
 }
 
 .info-section li {
-  padding: 4px 0;
-  padding-left: 16px;
+  padding: 3px 0;
+  padding-left: 12px;
   position: relative;
 }
 

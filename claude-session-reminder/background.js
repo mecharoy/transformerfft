@@ -84,8 +84,28 @@ async function fetchUsageData() {
 function parseResetTime(html) {
   const now = Date.now();
 
-  // Pattern 1: "Resets in X hours" or "Resets in X hours and Y minutes"
-  const hoursMinMatch = html.match(/resets?\s+in\s+(\d+)\s*(?:hours?|hrs?)\s*(?:and\s+)?(\d+)?\s*(?:minutes?|mins?)?/i);
+  // Pattern 1: "Resets in 4 hr 27 min" - EXACT format from Claude
+  const hrMinMatch = html.match(/Resets\s+in\s+(\d+)\s*hr\s+(\d+)\s*min/i);
+  if (hrMinMatch) {
+    const hours = parseInt(hrMinMatch[1], 10);
+    const mins = parseInt(hrMinMatch[2], 10);
+    return now + (hours * 60 * 60 * 1000) + (mins * 60 * 1000);
+  }
+
+  // Pattern 2: "Resets in X hr" (no minutes)
+  const hrOnlyMatch = html.match(/Resets\s+in\s+(\d+)\s*hr(?!\s*\d)/i);
+  if (hrOnlyMatch) {
+    return now + parseInt(hrOnlyMatch[1], 10) * 60 * 60 * 1000;
+  }
+
+  // Pattern 3: "Resets in X min" (no hours)
+  const minOnlyMatch = html.match(/Resets\s+in\s+(\d+)\s*min/i);
+  if (minOnlyMatch) {
+    return now + parseInt(minOnlyMatch[1], 10) * 60 * 1000;
+  }
+
+  // Pattern 4: "Resets in X hours Y minutes" (alternate format)
+  const hoursMinMatch = html.match(/Resets\s+in\s+(\d+)\s*hours?\s*(?:and\s+)?(\d+)?\s*min(?:utes?)?/i);
   if (hoursMinMatch) {
     let totalMs = parseInt(hoursMinMatch[1], 10) * 60 * 60 * 1000;
     if (hoursMinMatch[2]) {
@@ -94,61 +114,24 @@ function parseResetTime(html) {
     return now + totalMs;
   }
 
-  // Pattern 2: "Resets in X minutes"
-  const minutesMatch = html.match(/resets?\s+in\s+(\d+)\s*(?:minutes?|mins?)/i);
-  if (minutesMatch) {
-    const totalMs = parseInt(minutesMatch[1], 10) * 60 * 1000;
-    return now + totalMs;
-  }
-
-  // Pattern 3: "X hours until reset" or "X hours Y minutes until"
-  const untilMatch = html.match(/(\d+)\s*(?:hours?|hrs?)\s*(?:and\s+)?(\d+)?\s*(?:minutes?|mins?)?\s*until/i);
-  if (untilMatch) {
-    let totalMs = parseInt(untilMatch[1], 10) * 60 * 60 * 1000;
-    if (untilMatch[2]) {
-      totalMs += parseInt(untilMatch[2], 10) * 60 * 1000;
-    }
-    return now + totalMs;
-  }
-
-  // Pattern 4: "X minutes until"
-  const minUntilMatch = html.match(/(\d+)\s*(?:minutes?|mins?)\s*until/i);
-  if (minUntilMatch) {
-    const totalMs = parseInt(minUntilMatch[1], 10) * 60 * 1000;
-    return now + totalMs;
-  }
-
-  // Pattern 5: Look for time formats like "5h 30m" or "5:30"
-  const shortMatch = html.match(/(\d+)\s*h\s*(\d+)?\s*m?(?:\s|<|$)/i);
-  if (shortMatch) {
-    let totalMs = parseInt(shortMatch[1], 10) * 60 * 60 * 1000;
-    if (shortMatch[2]) {
-      totalMs += parseInt(shortMatch[2], 10) * 60 * 1000;
-    }
-    return now + totalMs;
-  }
-
-  // Pattern 6: JSON data in the page (Claude might embed data in JSON)
+  // Pattern 5: JSON data in the page
   const jsonMatch = html.match(/"resetsAt"\s*:\s*"([^"]+)"/i) ||
                     html.match(/"reset_at"\s*:\s*"([^"]+)"/i) ||
                     html.match(/"resetTime"\s*:\s*"([^"]+)"/i) ||
                     html.match(/"expiresAt"\s*:\s*"([^"]+)"/i);
   if (jsonMatch) {
     const resetDate = new Date(jsonMatch[1]);
-    if (!isNaN(resetDate.getTime())) {
+    if (!isNaN(resetDate.getTime()) && resetDate.getTime() > now) {
       return resetDate.getTime();
     }
   }
 
-  // Pattern 7: Unix timestamp in JSON
+  // Pattern 6: Unix timestamp in JSON
   const timestampMatch = html.match(/"(?:resetsAt|reset_at|resetTime|expiresAt)"\s*:\s*(\d{10,13})/i);
   if (timestampMatch) {
     let timestamp = parseInt(timestampMatch[1], 10);
-    // Convert seconds to milliseconds if needed
-    if (timestamp < 10000000000) {
-      timestamp *= 1000;
-    }
-    return timestamp;
+    if (timestamp < 10000000000) timestamp *= 1000;
+    if (timestamp > now) return timestamp;
   }
 
   return null;

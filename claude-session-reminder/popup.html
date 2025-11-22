@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Session Reminder</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <h1>⏰ Claude Limit Reminder</h1>
+
+    <div class="status-section">
+      <div id="status" class="status">
+        <span class="status-label">Status:</span>
+        <span id="status-text">Checking...</span>
+      </div>
+      <div id="countdown" class="countdown"></div>
+    </div>
+
+    <div class="settings-section">
+      <h2>Set Reset Time</h2>
+      <p class="hint">Visit <a href="https://claude.ai/settings/usage" target="_blank">Claude Usage Settings</a> to auto-detect, or set manually:</p>
+
+      <div class="input-group">
+        <label for="reset-time">Reset Time:</label>
+        <input type="datetime-local" id="reset-time">
+      </div>
+
+      <div class="input-group">
+        <label for="reminder-minutes">Remind me (minutes before):</label>
+        <input type="number" id="reminder-minutes" value="30" min="1" max="180">
+      </div>
+
+      <div class="button-group">
+        <button id="save-btn" class="btn primary">Save & Set Reminder</button>
+        <button id="clear-btn" class="btn secondary">Clear</button>
+      </div>
+    </div>
+
+    <div id="message" class="message"></div>
+
+    <div class="info-section">
+      <h3>How it works</h3>
+      <ul>
+        <li>Visit the Claude usage page to auto-detect reset time</li>
+        <li>Or manually set your reset time above</li>
+        <li>Get notified 30 min before reset to use remaining capacity</li>
+      </ul>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -19,13 +19,9 @@
       <div id="reset-time-display" class="reset-time"></div>
     </div>
 
-    <div class="fetch-section">
-      <div class="fetch-info">
-        <span class="dot" id="fetch-dot"></span>
-        <span id="fetch-status">Auto-fetching every 5 min</span>
-      </div>
-      <div id="last-fetch" class="last-fetch"></div>
-      <button id="fetch-now-btn" class="btn small">Refresh Now</button>
+    <div class="detect-section">
+      <p class="detect-hint">Open <a href="https://claude.ai/settings/usage" target="_blank">Claude Usage</a> page, then click:</p>
+      <button id="detect-btn" class="btn primary">Detect Reset Time from Page</button>
     </div>
 
     <div class="settings-section">
@@ -34,18 +30,17 @@
         <label for="reminder-minutes">Remind me (minutes before reset):</label>
         <input type="number" id="reminder-minutes" value="30" min="1" max="180">
       </div>
-      <button id="save-btn" class="btn primary">Save Settings</button>
+      <button id="save-btn" class="btn secondary">Save Settings</button>
     </div>
 
     <div id="message" class="message"></div>
 
     <div class="info-section">
-      <h3>How it works</h3>
+      <h3>How to use</h3>
       <ul>
-        <li>Extension auto-fetches reset time every 5 minutes</li>
-        <li>Also detects time when you browse claude.ai</li>
-        <li>Notifies you before your limit resets</li>
-        <li>Make sure you're logged into Claude!</li>
+        <li>Go to claude.ai/settings/usage</li>
+        <li>Click "Detect Reset Time from Page"</li>
+        <li>You'll be notified before limit resets</li>
       </ul>
     </div>
   </div>

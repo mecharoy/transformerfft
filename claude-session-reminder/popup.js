@@ -6,13 +6,11 @@ const browser = window.browser || window.chrome;
 document.addEventListener('DOMContentLoaded', async () => {
   const reminderMinutesInput = document.getElementById('reminder-minutes');
   const saveBtn = document.getElementById('save-btn');
-  const fetchNowBtn = document.getElementById('fetch-now-btn');
+  const detectBtn = document.getElementById('detect-btn');
   const statusText = document.getElementById('status-text');
   const countdownEl = document.getElementById('countdown');
   const resetTimeDisplay = document.getElementById('reset-time-display');
   const messageEl = document.getElementById('message');
-  const lastFetchEl = document.getElementById('last-fetch');
-  const fetchDot = document.getElementById('fetch-dot');
 
   // Load saved settings
   const data = await browser.storage.local.get(['reminderMinutes', 'resetTime', 'lastFetch']);
@@ -34,59 +32,114 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
 
-    // Send to background script
-    browser.runtime.sendMessage({
-      action: 'setReminderMinutes',
-      minutes: reminderMinutes
-    });
+    await browser.storage.local.set({ reminderMinutes });
+
+    // Update reminder alarm if we have a reset time
+    const data = await browser.storage.local.get(['resetTime']);
+    if (data.resetTime) {
+      browser.runtime.sendMessage({
+        action: 'setReminderMinutes',
+        minutes: reminderMinutes
+      });
+    }
 
     showMessage('Settings saved!', 'success');
   });
 
-  // Fetch now button handler
-  fetchNowBtn.addEventListener('click', async () => {
-    fetchNowBtn.disabled = true;
-    fetchNowBtn.textContent = 'Fetching...';
+  // Detect button handler - injects script into active tab
+  detectBtn.addEventListener('click', async () => {
+    detectBtn.disabled = true;
+    detectBtn.textContent = 'Detecting...';
 
     try {
-      await browser.runtime.sendMessage({ action: 'fetchNow' });
-      showMessage('Fetched! Check if reset time updated.', 'success');
-    } catch (e) {
-      showMessage('Fetch failed. Are you logged into Claude?', 'error');
+      // Get active tab
+      const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+      const tab = tabs[0];
+
+      if (!tab || !tab.url || !tab.url.includes('claude.ai')) {
+        showMessage('Please open claude.ai/settings/usage first!', 'error');
+        detectBtn.disabled = false;
+        detectBtn.textContent = 'Detect Reset Time from Page';
+        return;
+      }
+
+      // Inject detection script
+      const results = await browser.tabs.executeScript(tab.id, {
+        code: `
+          (function() {
+            const text = document.body.innerText;
+
+            // Try to match "Resets in X hr Y min"
+            const match = text.match(/Resets\\s+in\\s+(\\d+)\\s*hr\\s+(\\d+)\\s*min/i);
+            if (match) {
+              const hours = parseInt(match[1], 10);
+              const mins = parseInt(match[2], 10);
+              const resetTime = Date.now() + (hours * 60 * 60 * 1000) + (mins * 60 * 1000);
+              return { success: true, resetTime, matched: match[0] };
+            }
+
+            // Try "Resets in X hr"
+            const hrMatch = text.match(/Resets\\s+in\\s+(\\d+)\\s*hr/i);
+            if (hrMatch) {
+              const hours = parseInt(hrMatch[1], 10);
+              const resetTime = Date.now() + (hours * 60 * 60 * 1000);
+              return { success: true, resetTime, matched: hrMatch[0] };
+            }
+
+            // Try "Resets in X min"
+            const minMatch = text.match(/Resets\\s+in\\s+(\\d+)\\s*min/i);
+            if (minMatch) {
+              const mins = parseInt(minMatch[1], 10);
+              const resetTime = Date.now() + (mins * 60 * 1000);
+              return { success: true, resetTime, matched: minMatch[0] };
+            }
+
+            return { success: false, text: text.substring(0, 500) };
+          })();
+        `
+      });
+
+      const result = results[0];
+
+      if (result && result.success) {
+        // Save the reset time
+        await browser.storage.local.set({
+          resetTime: result.resetTime,
+          lastFetch: Date.now()
+        });
+
+        // Set reminder alarm
+        const settings = await browser.storage.local.get(['reminderMinutes']);
+        const reminderMinutes = settings.reminderMinutes || 30;
+
+        browser.runtime.sendMessage({
+          action: 'resetTimeFromContent',
+          resetTime: result.resetTime
+        });
+
+        showMessage('Detected: ' + result.matched, 'success');
+        updateStatus();
+      } else {
+        showMessage('Could not find reset time. Make sure you are on the Usage page.', 'error');
+        console.log('Page text sample:', result ? result.text : 'no result');
+      }
+    } catch (error) {
+      console.error('Detection error:', error);
+      showMessage('Error: ' + error.message, 'error');
     }
 
-    setTimeout(() => {
-      fetchNowBtn.disabled = false;
-      fetchNowBtn.textContent = 'Refresh Now';
-      updateStatus();
-    }, 1000);
+    detectBtn.disabled = false;
+    detectBtn.textContent = 'Detect Reset Time from Page';
   });
 
   async function updateStatus() {
     const data = await browser.storage.local.get(['resetTime', 'reminderMinutes', 'lastFetch']);
 
-    // Update last fetch time
-    if (data.lastFetch) {
-      const ago = Math.round((Date.now() - data.lastFetch) / 60000);
-      if (ago < 1) {
-        lastFetchEl.textContent = 'Last checked: just now';
-      } else if (ago === 1) {
-        lastFetchEl.textContent = 'Last checked: 1 minute ago';
-      } else {
-        lastFetchEl.textContent = `Last checked: ${ago} minutes ago`;
-      }
-      fetchDot.classList.add('active');
-    } else {
-      lastFetchEl.textContent = 'Not fetched yet';
-      fetchDot.classList.remove('active');
-    }
-
-    // Update countdown
     if (!data.resetTime) {
-      statusText.textContent = 'Waiting for data...';
+      statusText.textContent = 'No reset time set';
       statusText.className = 'status-value pending';
       countdownEl.textContent = '--:--:--';
-      resetTimeDisplay.textContent = 'Visit claude.ai or wait for auto-fetch';
+      resetTimeDisplay.textContent = 'Click detect button after opening Claude usage page';
       return;
     }
 
@@ -98,7 +151,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       statusText.textContent = 'Limit should be reset!';
       statusText.className = 'status-value warning';
       countdownEl.textContent = '00:00:00';
-      resetTimeDisplay.textContent = 'Your usage limit has reset';
+      resetTimeDisplay.textContent = 'Your usage limit has reset - detect again';
       return;
     }
 
@@ -138,6 +191,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     setTimeout(() => {
       messageEl.className = 'message';
-    }, 3000);
+    }, 4000);
   }
 });

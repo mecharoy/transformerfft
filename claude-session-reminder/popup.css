@@ -88,6 +88,30 @@ h3 {
   color: #888;
 }
 
+.detect-section {
+  background: rgba(201, 162, 39, 0.1);
+  border: 1px solid #c9a227;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+  text-align: center;
+}
+
+.detect-hint {
+  font-size: 11px;
+  color: #aaa;
+  margin-bottom: 10px;
+}
+
+.detect-hint a {
+  color: #c9a227;
+  text-decoration: none;
+}
+
+.detect-hint a:hover {
+  text-decoration: underline;
+}
+
 .fetch-section {
   background: rgba(255, 255, 255, 0.03);
   border-radius: 8px;

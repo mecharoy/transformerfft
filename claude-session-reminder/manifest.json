@@ -1,12 +1,14 @@
 {
   "manifest_version": 2,
   "name": "Claude Session Limit Reminder",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Automatically reminds you 30 minutes before your Claude usage limit resets",
   "permissions": [
     "storage",
     "alarms",
     "notifications",
+    "activeTab",
+    "tabs",
     "https://claude.ai/*"
   ],
   "browser_specific_settings": {
